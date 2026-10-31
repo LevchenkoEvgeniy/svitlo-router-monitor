@@ -62,11 +62,18 @@ def health_event(previous,code,epoch):
  state['health']=kind;state['lastError']=epoch
  return pending,state
 
+def validate_fcm_info(info):
+ required=('type','project_id','client_email','private_key','token_uri')
+ missing=[key for key in required if not isinstance(info.get(key),str) or not info[key].strip()]
+ if missing:raise ValueError('FCM_SERVICE_ACCOUNT_JSON: missing fields: '+', '.join(missing))
+ if info['type']!='service_account' or '-----BEGIN PRIVATE KEY-----' not in info['private_key']:raise ValueError('FCM_SERVICE_ACCOUNT_JSON is not a service-account key')
+ if info['token_uri'] not in ('https://oauth2.googleapis.com/token','https://accounts.google.com/o/oauth2/token'):raise ValueError('FCM_SERVICE_ACCOUNT_JSON: unsupported token endpoint')
+
 def send_push(config,event):
  from google.oauth2 import service_account
  from google.auth.transport.requests import Request
  import requests
- info=json.loads(os.environ['FCM_SERVICE_ACCOUNT_JSON'])
+ info=json.loads(os.environ['FCM_SERVICE_ACCOUNT_JSON']);validate_fcm_info(info)
  credentials=service_account.Credentials.from_service_account_info(info,scopes=['https://www.googleapis.com/auth/firebase.messaging']);credentials.refresh(Request())
  data={'title':event['title'],'body':event['body'],'eventId':event['id'],'kind':'router_status'}
  message={'token':config['fcmToken'],'notification':{'title':event['title'],'body':event['body']},'data':data,'android':{'priority':'high','ttl':'3600s','notification':{'channel_id':'updates','tag':event['id']}}}
@@ -113,6 +120,13 @@ def validate_config(config):
 
 def run():
  config=json.loads(os.environ['MONITOR_CONFIG_JSON']);validate_config(config)
+ try:validate_fcm_info(json.loads(os.environ['FCM_SERVICE_ACCOUNT_JSON']))
+ except (ValueError,TypeError) as error:
+  # Only our schema errors contain field names; never print arbitrary credential contents.
+  print('FCM key validation failed. Required fields: type, project_id, client_email, private_key, token_uri.')
+  info=json.loads(os.environ['FCM_SERVICE_ACCOUNT_JSON'])
+  if isinstance(info,dict):print('Missing required fields:',','.join(k for k in ('type','project_id','client_email','private_key','token_uri') if not isinstance(info.get(k),str) or not info.get(k)))
+  raise RuntimeError('Invalid FCM key schema') from None
  previous=restore_state();epoch=int(time.time())
  try:
   observed=get_devices(config['session'])
@@ -120,6 +134,7 @@ def run():
  except CloudError as error:pending,state=health_event(previous,error.code,epoch)
  except Exception:pending,state=health_event(previous,None,epoch)
  else:pending,state=events(config,observed,previous,epoch)
+ print('Cloud check result:',state.get('health'),'Pending events:',len(pending))
  for event in pending:send_push(config,event)
  if os.getenv('SEND_TEST_PUSH')=='true':send_push(config,{'title':'Тест мониторинга роутеров','body':'GitHub Actions может отправлять уведомления на этот телефон.','id':'test-monitor'})
  save_state(state)
