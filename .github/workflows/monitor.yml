@@ -1,0 +1,60 @@
+name: Router monitoring
+on:
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_push:
+        description: Send a test notification
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: router-monitor
+  cancel-in-progress: false
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      MONITOR_CONFIG_JSON: ${{ secrets.MONITOR_CONFIG_JSON }}
+      FCM_SERVICE_ACCOUNT_JSON: ${{ secrets.FCM_SERVICE_ACCOUNT_JSON }}
+      STATE_KEY: ${{ secrets.STATE_KEY }}
+      GITHUB_TOKEN: ${{ github.token }}
+      SEND_TEST_PUSH: ${{ inputs.test_push == true && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Check configuration
+        id: config
+        run: |
+          python - <<'PY'
+          import os
+          names=('MONITOR_CONFIG_JSON','FCM_SERVICE_ACCOUNT_JSON','STATE_KEY')
+          missing=[name for name in names if not os.environ.get(name)]
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              out.write('ready='+('false' if missing else 'true')+'\n')
+          if missing:
+              print('::notice::Monitoring is not active. Add repository secrets: '+', '.join(missing))
+          PY
+      - name: Install dependencies
+        if: steps.config.outputs.ready == 'true'
+        run: python -m pip install -r requirements.txt
+      - name: Check routers
+        if: steps.config.outputs.ready == 'true'
+        run: python monitor.py
+      - name: Save encrypted state
+        if: steps.config.outputs.ready == 'true' && success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: monitor-state
+          path: .state/state.enc
+          include-hidden-files: true
+          retention-days: 2
+          if-no-files-found: error

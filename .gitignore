@@ -1,0 +1,7 @@
+.env
+*.secret
+credentials*.json
+monitor-config*.json
+.state/
+__pycache__/
+.venv/
